@@ -102,6 +102,11 @@ fun NotesScreen(
     var noteToDelete by remember { mutableStateOf<Note?>(null) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
 
+    // Démarrage garanti de l'écoute Firestore à l'ouverture de l'écran
+    LaunchedEffect(Unit) {
+        viewModel.startListening()
+    }
+
     // Écoute des messages du ViewModel pour les Snackbars
     LaunchedEffect(message) {
         if (message.isNotBlank()) {

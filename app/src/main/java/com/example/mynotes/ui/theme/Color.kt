@@ -33,10 +33,9 @@ val ErrorRed = Color(0xFFEF4444)
 // Helper pour obtenir la couleur de fond d'une carte de note
 fun getNoteCardBackgroundColor(colorIndex: Int, isDark: Boolean): Color {
     val index = colorIndex.coerceIn(0, NoteConstants.COLOR_OPTIONS.size - 1)
-    val colorValue = if (isDark) {
+    return if (isDark) {
         NoteConstants.COLOR_OPTIONS_DARK[index]
     } else {
         NoteConstants.COLOR_OPTIONS[index]
     }
-    return Color(colorValue)
 }

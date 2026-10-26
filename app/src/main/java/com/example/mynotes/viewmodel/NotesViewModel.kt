@@ -1,9 +1,11 @@
 package com.example.mynotes.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.mynotes.model.Note
 import com.example.mynotes.repository.NoteRepository
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -15,6 +17,8 @@ import kotlinx.coroutines.flow.stateIn
 class NotesViewModel : ViewModel() {
 
     private val repository = NoteRepository()
+    private val auth = FirebaseAuth.getInstance()
+    private val tag = "MyNotesVM"
 
     // Notes brutes venant de Firestore
     private val _notes = MutableStateFlow<List<Note>>(emptyList())
@@ -39,7 +43,7 @@ class NotesViewModel : ViewModel() {
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
 
-    // Notes filtrées réactives
+    // Notes filtrées réactives (Eagerly pour éviter tout délai d'affichage)
     val filteredNotes: StateFlow<List<Note>> = combine(
         _notes,
         _searchQuery,
@@ -58,13 +62,29 @@ class NotesViewModel : ViewModel() {
         }
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
+        started = SharingStarted.Eagerly,
         initialValue = emptyList()
     )
 
     private var listener: ListenerRegistration? = null
+    private var authListener: FirebaseAuth.AuthStateListener? = null
 
     init {
+        // Écoute automatique des changements d'état d'authentification
+        authListener = FirebaseAuth.AuthStateListener { fbAuth ->
+            val user = fbAuth.currentUser
+            Log.d(tag, "AuthStateListener triggered. User: ${user?.uid}")
+            if (user != null) {
+                startListening()
+            } else {
+                listener?.remove()
+                listener = null
+                _notes.value = emptyList()
+                _isLoading.value = false
+            }
+        }
+        auth.addAuthStateListener(authListener!!)
+
         startListening()
     }
 
@@ -73,15 +93,25 @@ class NotesViewModel : ViewModel() {
     }
 
     fun startListening() {
+        val uid = repository.getUserId()
+        if (uid == null) {
+            Log.w(tag, "startListening cancelled: no user logged in")
+            _isLoading.value = false
+            return
+        }
+
         listener?.remove()
         _isLoading.value = true
 
+        Log.d(tag, "Subscribing to notes for user: $uid")
         listener = repository.listenToNotes(
             onNotesChanged = { newNotes ->
+                Log.d(tag, "Notes updated in ViewModel: ${newNotes.size} note(s)")
                 _notes.value = newNotes
                 _isLoading.value = false
             },
             onError = { error ->
+                Log.e(tag, "Error loading notes: $error")
                 _message.value = error
                 _isLoading.value = false
             }
@@ -209,6 +239,8 @@ class NotesViewModel : ViewModel() {
     override fun onCleared() {
         listener?.remove()
         listener = null
+        authListener?.let { auth.removeAuthStateListener(it) }
+        authListener = null
         super.onCleared()
     }
 }

@@ -1,17 +1,22 @@
 package com.example.mynotes.repository
 
+import android.util.Log
 import com.example.mynotes.model.Note
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import java.util.Date
 
 class NoteRepository {
 
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
 
-    private fun getUserId(): String? = auth.currentUser?.uid
+    private val tag = "MyNotesRepo"
+
+    fun getUserId(): String? = auth.currentUser?.uid
 
     private fun notesCollection() =
         getUserId()?.let { uid ->
@@ -34,7 +39,9 @@ class NoteRepository {
     ) {
         val collection = notesCollection()
         if (collection == null) {
-            onError("Utilisateur non connecté")
+            val err = "Utilisateur non connecté"
+            Log.e(tag, "addNote failed: $err")
+            onError(err)
             return
         }
 
@@ -53,11 +60,13 @@ class NoteRepository {
 
         collection
             .add(note)
-            .addOnSuccessListener {
+            .addOnSuccessListener { docRef ->
+                Log.d(tag, "Note added with ID: ${docRef.id}")
                 onSuccess()
             }
-            .addOnFailureListener {
-                onError(it.message ?: "Erreur lors de l'enregistrement de la note")
+            .addOnFailureListener { e ->
+                Log.e(tag, "Error adding note", e)
+                onError(e.message ?: "Erreur lors de l'enregistrement de la note")
             }
     }
 
@@ -73,7 +82,9 @@ class NoteRepository {
     ) {
         val collection = notesCollection()
         if (collection == null) {
-            onError("Utilisateur non connecté")
+            val err = "Utilisateur non connecté"
+            Log.e(tag, "updateNote failed: $err")
+            onError(err)
             return
         }
 
@@ -92,10 +103,12 @@ class NoteRepository {
             .document(noteId)
             .update(updates)
             .addOnSuccessListener {
+                Log.d(tag, "Note $noteId updated")
                 onSuccess()
             }
-            .addOnFailureListener {
-                onError(it.message ?: "Erreur lors de la modification")
+            .addOnFailureListener { e ->
+                Log.e(tag, "Error updating note $noteId", e)
+                onError(e.message ?: "Erreur lors de la modification")
             }
     }
 
@@ -117,8 +130,8 @@ class NoteRepository {
             .addOnSuccessListener {
                 onSuccess()
             }
-            .addOnFailureListener {
-                onError(it.message ?: "Erreur lors du changement d'épingle")
+            .addOnFailureListener { e ->
+                onError(e.message ?: "Erreur lors du changement d'épingle")
             }
     }
 
@@ -140,8 +153,8 @@ class NoteRepository {
             .addOnSuccessListener {
                 onSuccess()
             }
-            .addOnFailureListener {
-                onError(it.message ?: "Erreur lors du changement de couleur")
+            .addOnFailureListener { e ->
+                onError(e.message ?: "Erreur lors du changement de couleur")
             }
     }
 
@@ -160,10 +173,12 @@ class NoteRepository {
             .document(noteId)
             .delete()
             .addOnSuccessListener {
+                Log.d(tag, "Note $noteId deleted")
                 onSuccess()
             }
-            .addOnFailureListener {
-                onError(it.message ?: "Erreur lors de la suppression")
+            .addOnFailureListener { e ->
+                Log.e(tag, "Error deleting note $noteId", e)
+                onError(e.message ?: "Erreur lors de la suppression")
             }
     }
 
@@ -171,51 +186,112 @@ class NoteRepository {
         onNotesChanged: (List<Note>) -> Unit,
         onError: (String) -> Unit
     ): ListenerRegistration? {
-        val collection = notesCollection()
-        if (collection == null) {
+        val uid = getUserId()
+        if (uid == null) {
+            Log.w(tag, "listenToNotes: User is not logged in yet")
             onError("Utilisateur non connecté")
             return null
         }
 
+        val collection = firestore
+            .collection("users")
+            .document(uid)
+            .collection("notes")
+
+        Log.d(tag, "Starting Firestore listener on path: users/$uid/notes")
+
         return collection
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
+                    Log.e(tag, "Firestore snapshot listener error: ${error.message}", error)
                     onError(error.message ?: "Erreur lors du chargement des notes")
                     return@addSnapshotListener
                 }
 
-                val notes = snapshot?.documents?.mapNotNull { document ->
-                    val title = document.getString("title") ?: ""
-                    val content = document.getString("content") ?: ""
-                    val category = document.getString("category") ?: "Général"
-                    val colorIndex = document.getLong("colorIndex")?.toInt() ?: 0
-                    val isPinned = document.getBoolean("isPinned") ?: false
+                if (snapshot == null) {
+                    Log.w(tag, "Firestore snapshot is null")
+                    onNotesChanged(emptyList())
+                    return@addSnapshotListener
+                }
 
-                    val createdMillis = document.getTimestamp("createdAt")?.toDate()?.time
-                        ?: (document.getLong("createdAtMillis") ?: System.currentTimeMillis())
+                Log.d(tag, "Firestore snapshot received with ${snapshot.size()} document(s)")
 
-                    val updatedMillis = document.getTimestamp("updatedAt")?.toDate()?.time
-                        ?: (document.getLong("updatedAtMillis") ?: createdMillis)
+                val notes = snapshot.documents.mapNotNull { document ->
+                    try {
+                        val rawTitle = document.get("title")
+                        val rawContent = document.get("content")
 
-                    Note(
-                        id = document.id,
-                        title = title,
-                        content = content,
-                        category = category,
-                        colorIndex = colorIndex,
-                        isPinned = isPinned,
-                        createdAt = createdMillis,
-                        updatedAt = updatedMillis
-                    )
-                } ?: emptyList()
+                        val title = when (rawTitle) {
+                            is String -> rawTitle
+                            null -> ""
+                            else -> rawTitle.toString()
+                        }
 
-                // Tri : d'abord épinglées, puis par date de modification descendante
+                        val content = when (rawContent) {
+                            is String -> rawContent
+                            null -> ""
+                            else -> rawContent.toString()
+                        }
+
+                        val category = document.getString("category") ?: "Général"
+                        val colorIndex = (document.get("colorIndex") as? Number)?.toInt() ?: 0
+                        val isPinned = document.getBoolean("isPinned") ?: false
+
+                        // Résolution ultra-sécurisée des dates pour compatibilité avec tous types
+                        val createdMillis = parseTimestampSafely(
+                            document.get("createdAt"),
+                            document.get("createdAtMillis")
+                        )
+
+                        val updatedMillis = parseTimestampSafely(
+                            document.get("updatedAt"),
+                            document.get("updatedAtMillis")
+                        ) ?: createdMillis
+
+                        Note(
+                            id = document.id,
+                            title = title,
+                            content = content,
+                            category = category,
+                            colorIndex = colorIndex,
+                            isPinned = isPinned,
+                            createdAt = createdMillis,
+                            updatedAt = updatedMillis
+                        )
+                    } catch (e: Exception) {
+                        Log.e(tag, "Error parsing document ${document.id}: ${e.message}", e)
+                        null
+                    }
+                }
+
+                // Tri : Épinglées d'abord, puis par date de mise à jour descendante
                 val sortedNotes = notes.sortedWith(
                     compareByDescending<Note> { it.isPinned }
                         .thenByDescending { it.updatedAt }
                 )
 
+                Log.d(tag, "Delivering ${sortedNotes.size} note(s) to ViewModel")
                 onNotesChanged(sortedNotes)
             }
+    }
+
+    private fun parseTimestampSafely(primary: Any?, fallback: Any?): Long {
+        return when (primary) {
+            is Timestamp -> primary.toDate().time
+            is Date -> primary.time
+            is Number -> primary.toLong()
+            is String -> primary.toLongOrNull() ?: parseFallback(fallback)
+            else -> parseFallback(fallback)
+        }
+    }
+
+    private fun parseFallback(fallback: Any?): Long {
+        return when (fallback) {
+            is Timestamp -> fallback.toDate().time
+            is Date -> fallback.time
+            is Number -> fallback.toLong()
+            is String -> fallback.toLongOrNull() ?: System.currentTimeMillis()
+            else -> System.currentTimeMillis()
+        }
     }
 }
